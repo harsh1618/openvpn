@@ -79,6 +79,13 @@ AC_ARG_ENABLE(
 )
 
 AC_ARG_ENABLE(
+	[mfa],
+	[AS_HELP_STRING([--disable-mfa], [disable multi factor authentication @<:@default=yes@:>@])],
+	,
+	[enable_mfa="yes"]
+)
+
+AC_ARG_ENABLE(
 	[x509-alt-username],
 	[AS_HELP_STRING([--enable-x509-alt-username], [enable the --x509-username-field feature @<:@default=no@:>@])],
 	,
@@ -279,7 +286,7 @@ AC_ARG_WITH(
 	[crypto-library],
 	[AS_HELP_STRING([--with-crypto-library=library], [build with the given crypto library, TYPE=openssl|polarssl @<:@default=openssl@:>@])],
 	[
-		case "${withval}" in 
+		case "${withval}" in
 			openssl|polarssl) ;;
 			*) AC_MSG_ERROR([bad value ${withval} for --with-crypto-library]) ;;
 		esac
@@ -1072,6 +1079,11 @@ case "${with_crypto_library}" in
 		AC_DEFINE([ENABLE_CRYPTO_POLARSSL], [1], [Use PolarSSL library])
 		;;
 esac
+
+if test "${enable_mfa}" = "yes"; then
+	test "${enable_crypto}" != "yes" && AC_MSG_ERROR([crypto must be enabled for multi-factor-authentication])
+	AC_DEFINE([ENABLE_MFA], [1], [Enable multi-factor-authentication])
+fi
 
 if test "${enable_crypto}" = "yes"; then
 	test "${have_crypto_crypto}" != "yes" && AC_MSG_ERROR([${with_crypto_library} crypto is required but missing])
