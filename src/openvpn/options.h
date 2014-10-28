@@ -172,7 +172,10 @@ struct remote_host_store
 #define MFA_TYPE_OTP 0
 #define MFA_TYPE_PUSH 1
 #define MFA_TYPE_USER_PASS 2
+ /* Number of MFA methods. Also sent as MFA type when MFA is disabled */
 #define MFA_TYPE_N 3
+
+#define MFA_TYPE_COOKIE 4
 
 struct mfa_method
 {
@@ -573,6 +576,8 @@ struct options
   struct mfa_methods_list mfa_methods_list;
   bool mfa_backward_compat;
   bool mfa_session;
+  char *mfa_session_file;
+  int mfa_session_expire;
 #endif
 
   /* Per-packet timeout on control channel */

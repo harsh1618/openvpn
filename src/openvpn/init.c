@@ -44,6 +44,7 @@
 #include "ping.h"
 #include "mstats.h"
 #include "ssl_verify.h"
+#include "mfa_session.h"
 
 #include "memdbg.h"
 
@@ -429,7 +430,7 @@ init_query_passwords (struct context *c)
 #ifdef ENABLE_MFA
   if (c->options.mfa_methods_list.len > 0 && c->options.tls_client)
     {
-      auth_mfa_setup (&(c->options.mfa_methods_list));
+      auth_mfa_setup (&(c->options.mfa_methods_list), c->options.mfa_session);
     }
 #endif
 #endif
@@ -2139,6 +2140,10 @@ do_init_crypto_tls_c1 (struct context *c)
     {
       msg (D_INIT_MEDIUM, "Re-using SSL/TLS context");
     }
+
+#ifdef ENABLE_MFA
+  prng_bytes(c->c1.cookieIV, MFA_COOKIE_IV_LENGTH);
+#endif
 }
 
 static void
@@ -2202,6 +2207,9 @@ do_init_crypto_tls (struct context *c, const unsigned int flags)
   to.mfa_methods_list = options->mfa_methods_list;
   to.mfa_backward_compat = options->mfa_backward_compat;
   to.mfa_session = options->mfa_session;
+  to.mfa_session_file = options->mfa_session_file;
+  to.mfa_session_expire = options->mfa_session_expire;
+  to.cookieIV = c->c1.cookieIV;
 #endif
 #ifdef ENABLE_PUSH_PEER_INFO
   if (options->push_peer_info)		/* all there is */

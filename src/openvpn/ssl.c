@@ -359,6 +359,7 @@ static struct user_pass auth_user_pass; /* GLOBAL */
 #ifdef ENABLE_MFA
 static bool auth_mfa_enabled;           /* GLOBAL */
 static struct user_pass auth_mfa;       /* GLOBAL */
+static bool mfa_session_token_sent = false;         /* GLOBAL */
 #endif
 
 #ifdef ENABLE_CLIENT_CR
@@ -367,10 +368,10 @@ static char *auth_challenge; /* GLOBAL */
 
 #ifdef ENABLE_MFA
 void
-auth_mfa_setup (struct mfa_methods_list *mfa)
+auth_mfa_setup (struct mfa_methods_list *mfa, bool mfa_session)
 {
   auth_mfa_enabled = true;
-  if (!auth_mfa.defined)
+  if (!auth_mfa.defined && (!mfa_session || mfa_session_token_sent))
     {
       if (mfa->mfa_methods[MFA_TYPE_OTP].enabled)
         {
@@ -1915,6 +1916,71 @@ push_peer_info(struct buffer *buf, struct tls_session *session)
   return ret;
 }
 
+/* Writes MFA credentials in key method 2 packet */
+bool write_mfa_credentials (struct tls_session *session, struct buffer *buf)
+{
+  struct mfa_methods_list *m = &(session->opt->mfa_methods_list);
+  int mfa_type = get_enabled_mfa_method(m);
+  auth_mfa_setup(m, session->opt->mfa_session);
+  if (mfa_type == -1)
+    return false;
+  if (!buf_write_u32 (buf, mfa_type))
+    return false;
+
+  if (mfa_type == MFA_TYPE_USER_PASS)
+  {
+    if (!write_string (buf, auth_mfa.username, -1))
+      return false;
+  }
+  else /* OTP or push, no username required */
+  {
+    if (!write_empty_string (buf)) /* no username */
+      return false;
+  }
+  if (!(mfa_type == MFA_TYPE_PUSH))
+  {
+    if (!write_string (buf, auth_mfa.password, -1))
+      return false;
+  }
+  else
+  {
+    if (!write_empty_string (buf)) /* no password for push */
+      return false;
+  }
+
+  if (!write_empty_string (buf)) /* no timestamp */
+    return false;
+  if (!write_empty_string (buf)) /* no cookie */
+    return false;
+
+  purge_user_pass (&auth_mfa, false);
+  return true;
+}
+
+/* Writes MFA session cookie in key method 2 packet
+ * and empty strings for MFA credentials.
+ */
+bool write_mfa_cookie (struct tls_session *session,
+                       struct buffer *buf,
+                       struct mfa_session_info *cookie)
+{
+  if (!buf_write_u32 (buf, MFA_TYPE_COOKIE))
+    return false;
+
+  if (!write_empty_string (buf)) /* no username */
+    return false;
+  if (!write_empty_string (buf)) /* no password */
+    return false;
+
+  if (!write_string (buf, cookie->timestamp, MFA_TIMESTAMP_LENGTH))
+    return false;
+  if (!write_string (buf, cookie->token, MFA_TOKEN_LENGTH))
+    return false;
+
+  mfa_session_token_sent = true;
+  return true;
+}
+
 static bool
 key_method_2_write (struct buffer *buf, struct tls_session *session)
 {
@@ -1974,36 +2040,25 @@ key_method_2_write (struct buffer *buf, struct tls_session *session)
 #ifdef ENABLE_MFA
   if (auth_mfa_enabled) /* client only */
     {
-      struct mfa_methods_list *m = &(session->opt->mfa_methods_list);
-      auth_mfa_setup (m);
-
-      int mfa_type = get_enabled_mfa_method(m);
-      if (mfa_type == -1)
-        goto error;
-      if (!buf_write_u32 (buf, mfa_type))
-        goto error;
-
-      if (mfa_type == MFA_TYPE_USER_PASS)
+      if (session->opt->mfa_session && !mfa_session_token_sent) /* don't send cookie on retry */
         {
-          if (!write_string (buf, auth_mfa.username, -1))
-            goto error;
-        }
-      else /* OTP or push, no username required */
-        {
-          if (!write_empty_string (buf)) /* no username */
-            goto error;
-        }
-      if (!(mfa_type == MFA_TYPE_PUSH))
-        {
-          if (!write_string (buf, auth_mfa.password, -1))
-            goto error;
+          struct mfa_session_info *cookie = get_cookie (&(ks->remote_addr.dest), session->opt->cookie_jar);
+          if (!cookie)
+            {
+              if (!write_mfa_credentials(session, buf))
+                goto error;
+            }
+          else
+            {
+              if (!write_mfa_cookie(session, buf, cookie))
+                goto error;
+            }
         }
       else
         {
-          if (!write_empty_string (buf)) /* no password for push */
+          if (!write_mfa_credentials(session, buf))
             goto error;
         }
-      purge_user_pass (&auth_mfa, false);
     }
   else
     {
@@ -2012,6 +2067,10 @@ key_method_2_write (struct buffer *buf, struct tls_session *session)
       if (!write_empty_string (buf)) /* no username */
         goto error;
       if (!write_empty_string (buf)) /* no password */
+        goto error;
+      if (!write_empty_string (buf)) /* no timestamp */
+        goto error;
+      if (!write_empty_string (buf)) /* no session token */
         goto error;
     }
 #endif
@@ -2116,8 +2175,10 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
 #ifdef ENABLE_MFA
   bool peer_supports_mfa;
   bool mfa_username_status, mfa_password_status, mfa_type_status;
+  bool mfa_token_status, mfa_cookie_timestamp_status;
   int mfa_type;
   struct user_pass *mfa;
+  struct mfa_session_info cookie;
 #endif
 
   struct gc_arena gc = gc_new ();
@@ -2183,7 +2244,6 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
   ALLOC_OBJ_CLEAR_GC (up, struct user_pass, &gc);
   username_status = read_string (buf, up->username, USER_PASS_LEN);
   password_status = read_string (buf, up->password, USER_PASS_LEN);
-
 #if P2MP_SERVER
   /* get peer info from control channel */
   free (multi->peer_info);
@@ -2205,6 +2265,8 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
       ALLOC_OBJ_CLEAR_GC (mfa, struct user_pass, &gc);
       mfa_username_status = read_string (buf, mfa->username, USER_PASS_LEN);
       mfa_password_status = read_string (buf, mfa->password, USER_PASS_LEN);
+      mfa_cookie_timestamp_status = read_string (buf, cookie.timestamp, MFA_TIMESTAMP_LENGTH);
+      mfa_token_status = read_string (buf, cookie.token, MFA_TOKEN_LENGTH);
     }
 #endif
 
@@ -2255,6 +2317,20 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
         }
       else
         {
+          if (session->opt->client_mfa_type == MFA_TYPE_COOKIE)
+          {
+            if (!mfa_token_status || !mfa_cookie_timestamp_status)
+              {
+                msg(D_TLS_ERRORS, "TLS Error: Client did not provide session cookie");
+                ks->authenticated = false;
+              }
+            else if (session->opt->mfa_session)
+              verify_mfa_cookie (session, cookie);
+            else
+              ks->authenticated = false;
+          }
+          else /* client used one of the MFA auth methods */
+            {
           /*
            * set username to common name in case of OTP and PUSH
            */
@@ -2264,6 +2340,7 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
               strncpynt(mfa->username, session->common_name, USER_PASS_LEN);
             }
           verify_user_pass(mfa, multi, session, VERIFY_MFA_CREDENTIALS);
+            }
         }
     }
   else
