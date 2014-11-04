@@ -359,7 +359,7 @@ static struct user_pass auth_user_pass; /* GLOBAL */
 #ifdef ENABLE_MFA
 static bool auth_mfa_enabled;           /* GLOBAL */
 static struct user_pass auth_mfa;       /* GLOBAL */
-static bool mfa_session_token_sent = false;         /* GLOBAL */
+static bool mfa_session_token_sent;     /* GLOBAL */
 #endif
 
 #ifdef ENABLE_CLIENT_CR
@@ -368,10 +368,11 @@ static char *auth_challenge; /* GLOBAL */
 
 #ifdef ENABLE_MFA
 void
-auth_mfa_setup (struct mfa_methods_list *mfa, bool mfa_session)
+auth_mfa_setup (struct mfa_methods_list *mfa, bool mfa_session, bool cookie_read)
 {
   auth_mfa_enabled = true;
-  if (!auth_mfa.defined && (!mfa_session || mfa_session_token_sent))
+  if (!auth_mfa.defined &&
+          ((mfa_session && cookie_read) || !mfa_session || mfa_session_token_sent))
     {
       if (mfa->mfa_methods[MFA_TYPE_OTP].enabled)
         {
@@ -892,10 +893,14 @@ tls_session_user_pass_enabled(struct tls_session *session)
 static inline bool
 tls_session_mfa_enabled(struct tls_session *session)
 {
-  if (session->opt->mfa_methods_list.len > 0 && session->opt->server)
-    return true;
-  else
-    return false;
+  return (session->opt->mfa_methods_list.len > 0 && session->opt->server);
+}
+
+static inline bool
+mfa_client_read_token(struct tls_session *session)
+{
+  return (auth_mfa_enabled
+          && session->opt->mfa_session);
 }
 #endif
 /** @addtogroup control_processor
@@ -1916,12 +1921,13 @@ push_peer_info(struct buffer *buf, struct tls_session *session)
   return ret;
 }
 
+#ifdef ENABLE_MFA
 /* Writes MFA credentials in key method 2 packet */
 bool write_mfa_credentials (struct tls_session *session, struct buffer *buf)
 {
   struct mfa_methods_list *m = &(session->opt->mfa_methods_list);
   int mfa_type = get_enabled_mfa_method(m);
-  auth_mfa_setup(m, session->opt->mfa_session);
+  auth_mfa_setup(m, session->opt->mfa_session, true);
   if (mfa_type == -1)
     return false;
   if (!buf_write_u32 (buf, mfa_type))
@@ -1980,6 +1986,15 @@ bool write_mfa_cookie (struct tls_session *session,
   mfa_session_token_sent = true;
   return true;
 }
+
+void
+mfa_PRF (uint8_t *label, int label_len,
+         const uint8_t *sec, int slen,
+         uint8_t *out1, int olen)
+{
+  tls1_PRF (label, label_len, sec, slen, out1, olen);
+}
+#endif
 
 static bool
 key_method_2_write (struct buffer *buf, struct tls_session *session)
@@ -2060,6 +2075,14 @@ key_method_2_write (struct buffer *buf, struct tls_session *session)
             goto error;
         }
     }
+  else if (session->opt->server && session->generate_mfa_cookie) /* to generate a cookie for the client */
+    {
+      struct mfa_session_info cookie;
+      create_cookie (session, &cookie);
+      if (!write_mfa_cookie(session, buf, &cookie))
+        goto error;
+      session->generate_mfa_cookie = false;
+    }
   else
     {
       if (!buf_write_u32 (buf, MFA_TYPE_N)) /* mfa disabled */
@@ -2074,13 +2097,6 @@ key_method_2_write (struct buffer *buf, struct tls_session *session)
         goto error;
     }
 
-  if (session->opt->server && session->generate_mfa_cookie) /* to generate a cookie for the client */
-    {
-      struct mfa_session_info *cookie = create_cookie ();
-      if (!cookie && !write_mfa_cookie(session, buf, cookie))
-    goto error;
-      session->generate_mfa_cookie = false;
-    }
 #endif
 
   /*
@@ -2186,7 +2202,7 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
   bool mfa_token_status, mfa_cookie_timestamp_status;
   int mfa_type;
   struct user_pass *mfa;
-  struct mfa_session_info cookie;
+  struct mfa_session_info *cookie;
 #endif
 
   struct gc_arena gc = gc_new ();
@@ -2271,10 +2287,11 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
           goto error;
         }
       ALLOC_OBJ_CLEAR_GC (mfa, struct user_pass, &gc);
+      ALLOC_OBJ_CLEAR_GC (cookie, struct mfa_session_info, &gc);
       mfa_username_status = read_string (buf, mfa->username, USER_PASS_LEN);
       mfa_password_status = read_string (buf, mfa->password, USER_PASS_LEN);
-      mfa_cookie_timestamp_status = read_string (buf, cookie.timestamp, MFA_TIMESTAMP_LENGTH);
-      mfa_token_status = read_string (buf, cookie.token, MFA_TOKEN_LENGTH);
+      mfa_cookie_timestamp_status = read_string (buf, cookie->timestamp, MFA_TIMESTAMP_LENGTH);
+      mfa_token_status = read_string (buf, cookie->token, MFA_TOKEN_LENGTH);
     }
 #endif
 
@@ -2317,6 +2334,7 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
 #ifdef ENABLE_MFA
   /*check for MFA options */
   if (tls_session_mfa_enabled(session) && peer_supports_mfa)
+  /* !peer_supports_mfa should fail earlier during compat check */
     {
       if (!process_mfa_options (mfa_type, session))
         {
@@ -2334,11 +2352,8 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
                 }
               else if (session->opt->mfa_session)
                 {
-                  if (!verify_mfa_cookie (session, cookie))
-                    {
-                      msg(D_TLS_ERRORS, "TLS Error: Cookie authentication failed");
-                      goto error;
-                    }
+                  verify_cookie (session, cookie);
+                  CLEAR (cookie->token);
                 }
               else
                 {
@@ -2365,6 +2380,11 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
               verify_user_pass(mfa, multi, session, VERIFY_MFA_CREDENTIALS);
             }
         }
+    }
+  else if (mfa_client_read_token(session) && peer_supports_mfa)
+    {
+      /* write cookie->token to file */
+      ks->authenticated = true;
     }
   else
     {

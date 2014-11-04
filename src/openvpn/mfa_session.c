@@ -32,25 +32,89 @@
 
 #include "mfa_session.h"
 #include "socket.h"
+#include "otime.h"
 
 #ifdef ENABLE_MFA
-struct mfa_session_info * get_cookie (const struct openvpn_sockaddr *dest, struct mfa_session_store *store)
+struct mfa_session_info * get_cookie (const struct openvpn_sockaddr *dest, struct mfa_session_store *cookie_jar)
 {
   struct gc_arena gc = gc_new();
   int i;
   const char *addr = print_openvpn_sockaddr(dest, &gc);
   if (!addr)
     return NULL;
-  for (i = 0; i < store->len; i++)
+  for (i = 0; i < cookie_jar->len; i++)
     {
-      if (!strcmp(addr, store->mfa_session_info[i]->remote_address))
+      if (!strcmp(addr, cookie_jar->mfa_session_info[i]->remote_address))
         {
           break;
         }
     }
   gc_free(&gc);
-  if (i == store->len)
+  if (i == cookie_jar->len)
     return NULL;
-  return store->mfa_session_info[i];
+  return cookie_jar->mfa_session_info[i];
+}
+
+void generate_token(char * common_name, char * timestamp, uint8_t * key, char *token)
+{
+  char *data;
+  uint8_t *hash;
+  struct gc_arena gc = gc_new();
+  int length = strlen(common_name) + strlen(timestamp) + 1;
+
+  ALLOC_ARRAY_CLEAR_GC (data, char, length, &gc);
+  ALLOC_ARRAY_CLEAR_GC (hash, uint8_t, MFA_COOKIE_HASH_LENGTH, &gc);
+
+  openvpn_snprintf (data, length, "%s%s", common_name, timestamp);
+  mfa_PRF ((uint8_t *) data, length-1, key, MFA_COOKIE_KEY_LENGTH, hash, MFA_COOKIE_HASH_LENGTH);
+
+  char *hex = format_hex_ex (hash, MFA_COOKIE_HASH_LENGTH, MFA_TOKEN_LENGTH, 100, NULL, &gc);
+  memcpy(token, hex, MFA_TOKEN_LENGTH);
+
+  gc_free(&gc);
+}
+
+void create_cookie (struct tls_session *session, struct mfa_session_info *cookie)
+{
+  struct timeval tv;
+  gettimeofday (&tv, NULL);
+  openvpn_snprintf (cookie->timestamp, MFA_TIMESTAMP_LENGTH, "%llu", (long long unsigned) tv.tv_sec);
+  memcpy(cookie->common_name, session->common_name, TLS_USERNAME_LEN);
+  generate_token (cookie->common_name, cookie->timestamp, session->opt->cookie_key, cookie->token);
+}
+
+void verify_cookie (struct tls_session *session, struct mfa_session_info *cookie)
+{
+  struct gc_arena gc = gc_new();
+  // Check if the cookie has expired or not
+  struct timeval tv;
+  struct timeval now;
+  gettimeofday(&now, NULL);
+
+  if (!parse_time_string(cookie->timestamp, &tv))      /* Timestamp parsing failed */
+    goto error;
+
+  /* Check for expiration */
+  if (!tv_within_hours(&now, &tv, session->opt->mfa_session_expire))
+    goto error;
+
+  char * generated_token;
+  ALLOC_ARRAY_CLEAR_GC (generated_token, char, MFA_TOKEN_LENGTH, &gc);
+  generate_token (session->common_name, cookie->timestamp, session->opt->cookie_key, generated_token);
+
+  if (strcmp(cookie->token, generated_token) == 0)
+    {
+      msg(M_INFO, "Cookie authentication successful");
+      session->key[KS_PRIMARY].authenticated = true;
+    }
+  else
+    goto error;
+
+  gc_free(&gc);
+  return;
+
+ error:
+  msg(D_TLS_ERRORS, "TLS_AUTH_ERROR: Cookie authentication failed");
+  gc_free(&gc);
 }
 #endif
