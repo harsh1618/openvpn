@@ -44,7 +44,6 @@
 
 struct mfa_session_info
 {
-  char common_name[TLS_USERNAME_LEN];
   char token[MFA_TOKEN_LENGTH];
   char remote_address[REMOTE_ADDRESS_LENGTH];
   char timestamp[MFA_TIMESTAMP_LENGTH];
@@ -56,8 +55,11 @@ struct mfa_session_store
   struct mfa_session_info *mfa_session_info[MAX_MFA_SESSIONS];
 };
 
+void
+update_cookie_file (struct mfa_session_info *cookie, char * cookie_file, struct openvpn_sockaddr *dest);
+
 struct mfa_session_info *
-get_cookie (const struct openvpn_sockaddr *dest, struct mfa_session_store *store);
+get_cookie (const struct openvpn_sockaddr *dest, struct gc_arena *gc, char *cookie_file);
 
 void
 create_cookie (struct tls_session *session, struct mfa_session_info *cookie);
