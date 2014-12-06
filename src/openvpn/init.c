@@ -416,7 +416,7 @@ init_query_passwords (struct context *c)
   if (c->options.key_pass_file)
     pem_password_setup (c->options.key_pass_file);
 #endif
-  
+
 #if P2MP
   /* Auth user/pass input */
   if (c->options.auth_user_pass_file)
@@ -1042,7 +1042,7 @@ pre_setup (const struct options *options)
       /* put a title on the top window bar */
       if (win32_signal.mode == WSO_MODE_CONSOLE)
 	{
-	  window_title_save (&window_title); 
+	  window_title_save (&window_title);
 	  window_title_generate (options->config);
 	}
     }
@@ -1692,7 +1692,7 @@ do_up (struct context *c, bool pulled_options, unsigned int option_types_found)
 	{
 	  initialization_sequence_completed (c, 0); /* client/p2p restart with --persist-tun */
 	}
-	
+
       c->c2.do_up_ran = true;
     }
 }
@@ -1923,7 +1923,7 @@ frame_finalize_options (struct context *c, const struct options *o)
 			    |FRAME_HEADROOM_MARKER_READ_LINK
 			    |FRAME_HEADROOM_MARKER_READ_STREAM);
     }
-  
+
   frame_finalize (&c->c2.frame,
 		  o->ce.link_mtu_defined,
 		  o->ce.link_mtu,
@@ -2790,7 +2790,7 @@ do_init_first_time (struct context *c)
 
       ALLOC_OBJ_CLEAR_GC (c->c0, struct context_0, &c->gc);
       c0 = c->c0;
-      
+
       /* get user and/or group that we want to setuid/setgid to */
       c0->uid_gid_specified =
 	platform_group_get (c->options.groupname, &c0->platform_state_group) |
@@ -2891,7 +2891,7 @@ do_close_link_socket (struct context *c)
       c->c2.link_socket = NULL;
     }
 
-    
+
   /* Preserve the resolved list of remote if the user request to or if we want
    * reconnect to the same host again or there are still addresses that need
    * to be tried */
@@ -3106,7 +3106,7 @@ do_signal_on_tls_errors (struct context *c)
   if (c->options.tls_exit)
     c->c2.tls_exit_signal = SIGTERM;
   else
-    c->c2.tls_exit_signal = SIGUSR1;    
+    c->c2.tls_exit_signal = SIGUSR1;
 #endif
 }
 
@@ -3318,7 +3318,7 @@ init_instance_handle_signals (struct context *c, const struct env_set *env, cons
   if (IS_SIG (c))
     {
       remap_signal (c);
-      uninit_management_callback ();  
+      uninit_management_callback ();
     }
 }
 
@@ -3392,7 +3392,7 @@ init_instance (struct context *c, const struct env_set *env, const unsigned int 
   /* set error message delay for non-server modes */
   if (c->mode == CM_P2P)
     set_check_status_error_delay (P2P_ERROR_DELAY_MS);
-    
+
   /* warn about inconsistent options */
   if (c->mode == CM_P2P || c->mode == CM_TOP)
     do_option_warnings (c);
@@ -3538,7 +3538,7 @@ init_instance (struct context *c, const struct env_set *env, const unsigned int 
   if (c->first_time && (c->mode == CM_P2P || c->mode == CM_TOP))
     init_port_share (c);
 #endif
-	  
+
 #ifdef ENABLE_PF
   if (child)
     pf_init_context (c);
@@ -3657,7 +3657,9 @@ inherit_context_child (struct context *dest,
   /* inherit SSL context */
   dest->c1.ks.ssl_ctx = src->c1.ks.ssl_ctx;
   dest->c1.ks.tls_auth_key = src->c1.ks.tls_auth_key;
+#ifdef ENABLE_MFA
   memcpy(dest->c1.cookie_key, src->c1.cookie_key, sizeof(src->c1.cookie_key));
+#endif
 #endif
 
   /* options */
@@ -3718,7 +3720,7 @@ inherit_context_top (struct context *dest,
    * Also note that CM_TOP_CLONE context objects are
    * closed by multi_top_free in multi.c.
    */
-  dest->mode = CM_TOP_CLONE; 
+  dest->mode = CM_TOP_CLONE;
 
   dest->first_time = false;
   dest->c0 = NULL;
