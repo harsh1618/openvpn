@@ -647,6 +647,23 @@ static const char usage_message[] =
   "--show-digests  : Show message digest algorithms to use with --auth option.\n"
   "--show-engines  : Show hardware crypto accelerator engines (if available).\n"
   "--show-tls      : Show all TLS ciphers (TLS used only as a control channel).\n"
+ #ifdef ENABLE_MFA
+  "\n"
+  "Multi-factor authentication options:\n"
+  "--mfa-method type [script method]: Use multi-factor authentication.\n"
+  "                                   type can be 'otp', 'user-pass' or 'push'.\n"
+  "                                   When running with --mode server, use script and\n"
+  "                                   method to handle the multi-factor auth credentials.\n"
+  "                                   If method='via-env', pass credentials via environment\n"
+  "                                   If method='via-file', pass credentials via\n"
+  "                                   temporary file.\n"
+  "--mfa-session-expiration hours   : Number of hours for which multi-factor authentication\n"
+  "                                   will not be needed after the client authenticates\n"
+  "                                   successfully. Only for --mode server.\n"
+  "--mfa-session-file file          : The file in which tokens for multi-factor auth\n"
+  "                                   session resumption will be stored.\n"
+  "                                   Only for --mode client.\n"
+#endif
 #ifdef WIN32
   "\n"
   "Windows Specific:\n"
